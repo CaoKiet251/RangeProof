@@ -1,0 +1,50 @@
+{
+  "name": "cuproof-blockchain",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:verbose": "hardhat test --verbose",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost",
+    "deploy:hardhat": "hardhat run scripts/deploy.js --network hardhat",
+    "deploy:setup": "hardhat run scripts/deploy-with-setup.js --network localhost",
+    "deploy:256": "hardhat run scripts/deploy-256.js --network hardhat",
+    "deploy:256:local": "hardhat run scripts/deploy-256.js --network localhost",
+    "verify:256": "hardhat run scripts/verify-256.js --network hardhat",
+    "verify:256:local": "hardhat run scripts/verify-256.js --network localhost",
+    "node": "hardhat node",
+    "clean": "hardhat clean",
+    "coverage": "hardhat coverage",
+    "size": "hardhat size-contracts",
+    "verify": "hardhat verify",
+    "console": "hardhat console",
+    "start-and-deploy": "npm run node & sleep 5 && npm run deploy:setup"
+  },
+  "keywords": [
+    "cuproof",
+    "blockchain",
+    "zero-knowledge",
+    "range-proof"
+  ],
+  "author": "Cuproof Team",
+  "license": "MIT",
+  "description": "Blockchain integration for Cuproof range proof system",
+  "engines": {
+    "node": ">=16.0.0 <=22.0.0",
+    "npm": ">=8.0.0"
+  },
+  "devDependencies": {
+    "@nomiclabs/hardhat-ethers": "^2.2.3",
+    "@nomiclabs/hardhat-waffle": "^2.0.6",
+    "chai": "^4.3.7",
+    "ethereum-waffle": "^4.0.10",
+    "ethers": "^5.8.0",
+    "hardhat": "^2.19.0",
+    "hardhat-gas-reporter": "^1.0.9",
+    "solidity-coverage": "^0.8.5"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^4.9.0"
+  }
+}

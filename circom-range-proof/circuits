@@ -1,0 +1,28 @@
+pragma circom 2.0.4;
+
+include "circomlib/circuits/comparators.circom";
+include "circomlib/circuits/bitify.circom";
+
+template RangeProof8() {
+    signal input x;
+    
+    // Chuyển đổi x thành 8 bit để chứng minh range
+    component n2b = Num2Bits(8);
+    n2b.in <== x;
+    
+    // Chứng minh x >= 0 (tất cả các bit đều hợp lệ)
+    // Num2Bits tự động đảm bảo điều này
+    
+    // Chứng minh x < 2^8
+    // Điều này được đảm bảo bởi Num2Bits vì nó chỉ xử lý 8 bit
+    
+    // Chứng minh mỗi bit chỉ nhận giá trị 0 hoặc 1
+    // Num2Bits tự động đảm bảo điều này
+    
+    // Output để xác nhận range proof thành công
+    signal output valid;
+    valid <== 1;
+}
+
+// Khai báo mạch chính
+component main = RangeProof8();

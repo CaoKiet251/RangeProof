@@ -1,0 +1,354 @@
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+
+// Các range size cần measure
+const RANGE_SIZES = [64, 128, 256, 512, 1024];
+
+// Hàm measure thời gian thực thi
+function measureExecutionTime(command, description) {
+    console.log(`   ${description}...`);
+    const startTime = process.hrtime.bigint();
+    
+    try {
+        execSync(command, { stdio: 'pipe' });
+        const endTime = process.hrtime.bigint();
+        const executionTime = Number(endTime - startTime) / 1000000; // Convert to milliseconds
+        console.log(`   Completed in ${executionTime.toFixed(2)}ms`);
+        return executionTime;
+    } catch (error) {
+        console.error(`   Failed: ${error.message}`);
+        return null;
+    }
+}
+
+// Helper: tính median/p95
+function percentile(arr, p) {
+    if (!arr.length) return NaN;
+    const a = [...arr].sort((x, y) => x - y);
+    const idx = (p / 100) * (a.length - 1);
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    if (lo === hi) return a[lo];
+    return a[lo] + (a[hi] - a[lo]) * (idx - lo);
+}
+function median(arr) { return percentile(arr, 50); }
+function p95(arr) { return percentile(arr, 95); }
+
+// Helper: build witness một lần trong process
+async function buildWitnessOnce(rangeSize, inputPath) {
+    const wasmPath = path.join(process.cwd(), `RangeProof_${rangeSize}_js`, `RangeProof_${rangeSize}.wasm`);
+    const wcPath = path.join(process.cwd(), `RangeProof_${rangeSize}_js`, 'witness_calculator.js');
+    if (!fs.existsSync(wasmPath) || !fs.existsSync(wcPath)) {
+        throw new Error(`Missing wasm or witness_calculator for RangeProof_${rangeSize}`);
+    }
+    const wc = require(wcPath);
+    const buffer = fs.readFileSync(wasmPath);
+    const calculator = await wc(buffer);
+    const input = JSON.parse(fs.readFileSync(inputPath, 'utf8'));
+    const wtnsBin = await calculator.calculateWTNSBin(input, 0);
+    const witnessFile = path.join(process.cwd(), `witness_${rangeSize}.wtns`);
+    fs.writeFileSync(witnessFile, wtnsBin);
+    return witnessFile;
+}
+
+// Helper: lấy số ràng buộc và ước lượng bậc FFT
+function getConstraintsAndFft(rangeSize) {
+    try {
+        const info = execSync(`snarkjs r1cs info RangeProof_${rangeSize}.r1cs`, { stdio: 'pipe' }).toString();
+        const m = info.match(/Constraints:\s*(\d+)/i);
+        const signalsMatch = info.match(/# of signals:\s*(\d+)/i);
+        const constraints = m ? parseInt(m[1], 10) : NaN;
+        const signals = signalsMatch ? parseInt(signalsMatch[1], 10) : NaN;
+        const n = isNaN(constraints) ? 0 : constraints;
+        const fftOrder = n > 0 ? Math.ceil(Math.log2(n)) : NaN;
+        return { constraints, signals, fftOrder };
+    } catch (e) {
+        return { constraints: NaN, signals: NaN, fftOrder: NaN };
+    }
+}
+
+// Đo tách pha với warm-up + iterations
+async function measurePhasesWithStats(rangeSize, options) {
+    const { iterations = 20, warmup = 5, inputPath = `input_${rangeSize}.json` } = options || {};
+    const stats = {
+        rangeSize,
+        constraints: null,
+        signals: null,
+        fftOrder: null,
+        witnessOnceMs: null,
+        proveSamplesMs: [],
+        verifySamplesMs: [],
+        proveMedianMs: null,
+        proveP95Ms: null,
+        verifyMedianMs: null,
+        verifyP95Ms: null
+    };
+
+    const { constraints, signals, fftOrder } = getConstraintsAndFft(rangeSize);
+    stats.constraints = constraints;
+    stats.signals = signals;
+    stats.fftOrder = fftOrder;
+
+    // chuẩn bị input mặc định nếu thiếu
+    if (!fs.existsSync(inputPath)) {
+        const max = BigInt(2) ** BigInt(rangeSize) - BigInt(1);
+        const test = max > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : max;
+        fs.writeFileSync(inputPath, JSON.stringify({ x: test.toString() }));
+    }
+
+    const t0 = process.hrtime.bigint();
+    const witnessFile = await buildWitnessOnce(rangeSize, inputPath);
+    const t1 = process.hrtime.bigint();
+    stats.witnessOnceMs = Number(t1 - t0) / 1e6;
+
+    const zkey = `circuit_${rangeSize}_final.zkey`;
+    const proofFile = `proof_${rangeSize}.json`;
+    const publicFile = `public_${rangeSize}.json`;
+    const vkeyFile = `verification_key_${rangeSize}.json`;
+
+    for (let i = 0; i < warmup; i++) {
+        try {
+            execSync(`snarkjs groth16 prove ${zkey} ${witnessFile} ${proofFile} ${publicFile}`, { stdio: 'pipe' });
+            execSync(`snarkjs groth16 verify ${vkeyFile} ${publicFile} ${proofFile}`, { stdio: 'pipe' });
+        } catch (e) {}
+    }
+
+    for (let i = 0; i < iterations; i++) {
+        const s = process.hrtime.bigint();
+        execSync(`snarkjs groth16 prove ${zkey} ${witnessFile} ${proofFile} ${publicFile}`, { stdio: 'pipe' });
+        const e = process.hrtime.bigint();
+        stats.proveSamplesMs.push(Number(e - s) / 1e6);
+    }
+
+    for (let i = 0; i < iterations; i++) {
+        const s = process.hrtime.bigint();
+        execSync(`snarkjs groth16 verify ${vkeyFile} ${publicFile} ${proofFile}`, { stdio: 'pipe' });
+        const e = process.hrtime.bigint();
+        stats.verifySamplesMs.push(Number(e - s) / 1e6);
+    }
+
+    stats.proveMedianMs = median(stats.proveSamplesMs);
+    stats.proveP95Ms = p95(stats.proveSamplesMs);
+    stats.verifyMedianMs = median(stats.verifySamplesMs);
+    stats.verifyP95Ms = p95(stats.verifySamplesMs);
+
+    return stats;
+}
+
+// Hàm measure performance cho một circuit
+function measureCircuitPerformance(rangeSize) {
+    console.log(`\n${'='.repeat(70)}`);
+    console.log(` MEASURING PERFORMANCE FOR RANGE PROOF ${rangeSize} BIT`);
+    console.log(`${'='.repeat(70)}`);
+    
+    const results = {
+        rangeSize,
+        provingKeySetupTime: null,
+        provingKeyContributionTime: null,
+        verificationKeyExportTime: null,
+        proofGenerationTime: null,
+        proofVerificationTime: null,
+        totalProvingKeyTime: null,
+        totalProofTime: null,
+        totalVerificationTime: null,
+        zkeySize: 0,
+        proofSize: 0,
+        publicSize: 0,
+        verificationKeySize: 0
+    };
+    
+    try {
+        // 1. Generate proving key setup
+        console.log(`\n1️ Generating proving key setup...`);
+        results.provingKeySetupTime = measureExecutionTime(
+            `snarkjs groth16 setup RangeProof_${rangeSize}.r1cs pot12_final.ptau circuit_${rangeSize}_0000.zkey`,
+            `   Setting up groth16 for RangeProof_${rangeSize}`
+        );
+        
+        if (results.provingKeySetupTime === null) {
+            console.log(`  Skipping further steps for ${rangeSize}-bit circuit`);
+            return results;
+        }
+        
+        // 2. Contribute to proving key (with automatic entropy)
+        console.log(`\n2️ Contributing to proving key...`);
+        const entropy = `random_entropy_${rangeSize}_${Date.now()}`;
+        results.provingKeyContributionTime = measureExecutionTime(
+            `echo "${entropy}" | snarkjs zkey contribute circuit_${rangeSize}_0000.zkey circuit_${rangeSize}_final.zkey --name="1" -v`,
+            `   Contributing entropy to zkey`
+        );
+        
+        if (results.provingKeyContributionTime === null) {
+            console.log(`  Skipping further steps for ${rangeSize}-bit circuit`);
+            return results;
+        }
+        
+        // 3. Export verification key
+        console.log(`\n3️ Exporting verification key...`);
+        results.verificationKeyExportTime = measureExecutionTime(
+            `snarkjs zkey export verificationkey circuit_${rangeSize}_final.zkey verification_key_${rangeSize}.json`,
+            `   Exporting verification key`
+        );
+        
+        if (results.verificationKeyExportTime === null) {
+            console.log(` Skipping further steps for ${rangeSize}-bit circuit`);
+            return results;
+        }
+        
+        // 4. Generate proof
+        console.log(`\n4️ Generating proof...`);
+        results.proofGenerationTime = measureExecutionTime(
+            `snarkjs groth16 prove circuit_${rangeSize}_final.zkey witness_${rangeSize}.wtns proof_${rangeSize}.json public_${rangeSize}.json`,
+            `   Generating groth16 proof`
+        );
+        
+        if (results.proofGenerationTime === null) {
+            console.log(`⚠️  Skipping verification for ${rangeSize}-bit circuit`);
+            return results;
+        }
+        
+        // 5. Verify proof
+        console.log(`\n5️⃣ Verifying proof...`);
+        results.proofVerificationTime = measureExecutionTime(
+            `snarkjs groth16 verify verification_key_${rangeSize}.json public_${rangeSize}.json proof_${rangeSize}.json`,
+            `   Verifying proof`
+        );
+        
+        // Calculate total times
+        results.totalProvingKeyTime = results.provingKeySetupTime + results.provingKeyContributionTime + results.verificationKeyExportTime;
+        results.totalProofTime = results.proofGenerationTime;
+        results.totalVerificationTime = results.proofVerificationTime;
+        
+        // Measure file sizes
+        console.log(`\n6️⃣ Measuring file sizes...`);
+        try {
+            results.zkeySize = fs.existsSync(`circuit_${rangeSize}_final.zkey`) ? fs.statSync(`circuit_${rangeSize}_final.zkey`).size : 0;
+            results.proofSize = fs.existsSync(`proof_${rangeSize}.json`) ? fs.statSync(`proof_${rangeSize}.json`).size : 0;
+            results.publicSize = fs.existsSync(`public_${rangeSize}.json`) ? fs.statSync(`public_${rangeSize}.json`).size : 0;
+            results.verificationKeySize = fs.existsSync(`verification_key_${rangeSize}.json`) ? fs.statSync(`verification_key_${rangeSize}.json`).size : 0;
+        } catch (error) {
+            console.error(`   ❌ Error measuring file sizes: ${error.message}`);
+        }
+        
+        console.log(`\n📈 Performance Summary for RangeProof_${rangeSize}:`);
+        console.log(`   Proving key setup: ${results.provingKeySetupTime.toFixed(2)}ms`);
+        console.log(`   Proving key contribution: ${results.provingKeyContributionTime.toFixed(2)}ms`);
+        console.log(`   Verification key export: ${results.verificationKeyExportTime.toFixed(2)}ms`);
+        console.log(`   Proof generation: ${results.proofGenerationTime.toFixed(2)}ms`);
+        console.log(`   Proof verification: ${results.proofVerificationTime.toFixed(2)}ms`);
+        console.log(`   Total proving key time: ${results.totalProvingKeyTime.toFixed(2)}ms`);
+        console.log(`   Total proof time: ${results.totalProofTime.toFixed(2)}ms`);
+        console.log(`   Total verification time: ${results.totalVerificationTime.toFixed(2)}ms`);
+        console.log(`   ZKey size: ${(results.zkeySize / 1024).toFixed(2)} KB`);
+        console.log(`   Proof size: ${(results.proofSize / 1024).toFixed(2)} KB`);
+        console.log(`   Public size: ${(results.publicSize / 1024).toFixed(2)} KB`);
+        console.log(`   Verification key size: ${(results.verificationKeySize / 1024).toFixed(2)} KB`);
+        
+    } catch (error) {
+        console.error(`❌ Error measuring performance for RangeProof_${rangeSize}:`, error.message);
+    }
+    
+    return results;
+}
+
+// Hàm chính
+async function main() {
+    console.log('🚀 Starting Proof Performance Measurement...\n');
+    
+    const allResults = [];
+    
+    for (const rangeSize of RANGE_SIZES) {
+        const result = measureCircuitPerformance(rangeSize);
+        allResults.push(result);
+        
+        // Nếu circuit 64-bit đã có sẵn, chỉ cần measure file sizes
+        if (rangeSize === 64 && fs.existsSync(`proof_${rangeSize}.json`)) {
+            console.log(`\n📊 Circuit 64-bit already has proof, measuring file sizes only...`);
+            try {
+                result.zkeySize = fs.existsSync(`circuit_64.zkey`) ? fs.statSync(`circuit_64.zkey`).size : 0;
+                result.proofSize = fs.existsSync(`proof_64.json`) ? fs.statSync(`proof_64.json`).size : 0;
+                result.publicSize = fs.existsSync(`public_64.json`) ? fs.statSync(`public_64.json`).size : 0;
+                result.verificationKeySize = fs.existsSync(`verification_key_64.json`) ? fs.statSync(`verification_key_64.json`).size : 0;
+                
+                console.log(`   ZKey size: ${(result.zkeySize / 1024).toFixed(2)} KB`);
+                console.log(`   Proof size: ${(result.proofSize / 1024).toFixed(2)} KB`);
+                console.log(`   Public size: ${(result.publicSize / 1024).toFixed(2)} KB`);
+                console.log(`   Verification key size: ${(result.verificationKeySize.toFixed(2))} KB`);
+            } catch (error) {
+                console.error(`   ❌ Error measuring file sizes: ${error.message}`);
+            }
+        }
+
+        // Đo tách pha witness/prove/verify (median/p95) nếu có artefacts cần thiết
+        try {
+            if (fs.existsSync(`circuit_${rangeSize}_final.zkey`) && fs.existsSync(`verification_key_${rangeSize}.json`)) {
+                const defaultInputPath = `input_${rangeSize}.json`;
+                if (!fs.existsSync(defaultInputPath)) {
+                    const max = BigInt(2) ** BigInt(rangeSize) - BigInt(1);
+                    const test = max > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : max;
+                    fs.writeFileSync(defaultInputPath, JSON.stringify({ x: test.toString() }));
+                }
+                result.phaseStats = await measurePhasesWithStats(rangeSize, { iterations: 20, warmup: 5, inputPath: defaultInputPath });
+            }
+        } catch (e) {
+            // ignore phased measurement errors
+        }
+    }
+    
+    // Tạo báo cáo tổng hợp
+    console.log(`\n${'='.repeat(120)}`);
+    console.log('📊 COMPLETE PERFORMANCE SUMMARY');
+    console.log(`${'='.repeat(120)}`);
+    
+    console.log('\nRange Size | Setup | Contribute | Export | Proof Gen | Verify | Total Setup | Total Proof | Total Verify');
+    console.log('-----------|-------|------------|--------|-----------|--------|-------------|-------------|-------------');
+    
+    for (const result of allResults) {
+        if (result.totalProvingKeyTime !== null) {
+            console.log(`${result.rangeSize.toString().padStart(10)} | ${result.provingKeySetupTime?.toFixed(0).padStart(5)} | ${result.provingKeyContributionTime?.toFixed(0).padStart(10)} | ${result.verificationKeyExportTime?.toFixed(0).padStart(6)} | ${result.proofGenerationTime?.toFixed(0).padStart(9)} | ${result.proofVerificationTime?.toFixed(0).padStart(6)} | ${result.totalProvingKeyTime?.toFixed(0).padStart(11)} | ${result.totalProofTime?.toFixed(0).padStart(11)} | ${result.totalVerificationTime?.toFixed(0).padStart(11)}`);
+        } else {
+            console.log(`${result.rangeSize.toString().padStart(10)} | ${'N/A'.padStart(5)} | ${'N/A'.padStart(10)} | ${'N/A'.padStart(6)} | ${'N/A'.padStart(9)} | ${'N/A'.padStart(6)} | ${'N/A'.padStart(11)} | ${'N/A'.padStart(11)} | ${'N/A'.padStart(11)}`);
+        }
+    }
+    
+    console.log('\nRange Size | ZKey (KB) | Proof (KB) | Public (KB) | VKey (KB)');
+    console.log('-----------|------------|------------|-------------|-----------');
+    
+    for (const result of allResults) {
+        console.log(`${result.rangeSize.toString().padStart(10)} | ${(result.zkeySize / 1024).toFixed(0).padStart(10)} | ${(result.proofSize / 1024).toFixed(0).padStart(10)} | ${(result.publicSize / 1024).toFixed(0).padStart(11)} | ${(result.verificationKeySize / 1024).toFixed(0).padStart(8)}`);
+    }
+    
+    // In thống kê tách pha nếu có
+    console.log(`\n${'='.repeat(120)}`);
+    console.log('🧪 PHASED MEASUREMENTS (witness once, prove/verify median & p95)');
+    console.log(`${'='.repeat(120)}`);
+    for (const r of allResults) {
+        if (!r.phaseStats) continue;
+        const p = r.phaseStats;
+        console.log(`\nRangeProof_${r.rangeSize}: constraints=${p.constraints}, signals=${p.signals}, fftOrder≈${p.fftOrder}`);
+        console.log(`   Witness once: ${p.witnessOnceMs?.toFixed(2)} ms`);
+        console.log(`   Prove median/p95: ${p.proveMedianMs?.toFixed(2)} / ${p.proveP95Ms?.toFixed(2)} ms`);
+        console.log(`   Verify median/p95: ${p.verifyMedianMs?.toFixed(2)} / ${p.verifyP95Ms?.toFixed(2)} ms`);
+    }
+
+    // Lưu kết quả
+    const summary = {
+        timestamp: new Date().toISOString(),
+        results: allResults
+    };
+    
+    fs.writeFileSync('proof_performance_results.json', JSON.stringify(summary, null, 2));
+    console.log('\n💾 Results saved to proof_performance_results.json');
+    
+    return allResults;
+}
+
+// Chạy script
+if (require.main === module) {
+    main().catch(error => {
+        console.error('Error:', error);
+    });
+}
+
+module.exports = { measureCircuitPerformance, main, measurePhasesWithStats };

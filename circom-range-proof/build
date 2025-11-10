@@ -1,0 +1,11 @@
+1,1,1,main.valid
+2,2,1,main.x
+3,3,0,main.n2b.out[0]
+4,4,0,main.n2b.out[1]
+5,5,0,main.n2b.out[2]
+6,6,0,main.n2b.out[3]
+7,7,0,main.n2b.out[4]
+8,8,0,main.n2b.out[5]
+9,9,0,main.n2b.out[6]
+10,-1,0,main.n2b.out[7]
+11,-1,0,main.n2b.in

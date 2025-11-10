@@ -1,0 +1,82 @@
+# Range Proof Benchmark Results
+
+## Tổng Quan
+- **Ngày chạy**: 10:19:09 25/10/2025
+- **Số lần chạy**: 10 cho mỗi circuit
+- **Range sizes**: 8, 16, 32, 64, 128, 256, 512, 1024 bits
+- **Tổng thời gian**: 200.65s
+- **Tổng số kết quả**: 80
+
+## Kết Quả Theo Circuit
+
+### 8-bit Range Proof
+- **Constraints**: 9
+- **Witness Time**: 137.4ms (avg)
+- **Proof Time**: 1135.8ms (avg)
+- **Verify Time**: 1025.9ms (avg)
+- **Total Time**: 2.52s (avg), 2.07s (min), 5.03s (max)
+- **Runs**: 10/10
+
+### 16-bit Range Proof
+- **Constraints**: 17
+- **Witness Time**: 120.8ms (avg)
+- **Proof Time**: 1066.5ms (avg)
+- **Verify Time**: 898.6ms (avg)
+- **Total Time**: 2.29s (avg), 1.81s (min), 4.39s (max)
+- **Runs**: 10/10
+
+### 32-bit Range Proof
+- **Constraints**: 33
+- **Witness Time**: 120.5ms (avg)
+- **Proof Time**: 958.8ms (avg)
+- **Verify Time**: 861.3ms (avg)
+- **Total Time**: 2.13s (avg), 1.84s (min), 3.94s (max)
+- **Runs**: 10/10
+
+### 64-bit Range Proof
+- **Constraints**: 65
+- **Witness Time**: 115.8ms (avg)
+- **Proof Time**: 914.6ms (avg)
+- **Verify Time**: 847.1ms (avg)
+- **Total Time**: 2.07s (avg), 1.79s (min), 3.75s (max)
+- **Runs**: 10/10
+
+### 128-bit Range Proof
+- **Constraints**: 129
+- **Witness Time**: 134.0ms (avg)
+- **Proof Time**: 927.5ms (avg)
+- **Verify Time**: 817.4ms (avg)
+- **Total Time**: 2.08s (avg), 1.81s (min), 3.83s (max)
+- **Runs**: 10/10
+
+### 256-bit Range Proof
+- **Constraints**: 257
+- **Witness Time**: 127.7ms (avg)
+- **Proof Time**: 948.2ms (avg)
+- **Verify Time**: 863.5ms (avg)
+- **Total Time**: 2.15s (avg), 1.80s (min), 3.99s (max)
+- **Runs**: 10/10
+
+### 512-bit Range Proof
+- **Constraints**: 513
+- **Witness Time**: 123.5ms (avg)
+- **Proof Time**: 1004.8ms (avg)
+- **Verify Time**: 836.0ms (avg)
+- **Total Time**: 2.20s (avg), 1.84s (min), 4.48s (max)
+- **Runs**: 10/10
+
+### 1024-bit Range Proof
+- **Constraints**: 1025
+- **Witness Time**: 118.1ms (avg)
+- **Proof Time**: 1055.6ms (avg)
+- **Verify Time**: 832.6ms (avg)
+- **Total Time**: 2.31s (avg), 1.90s (min), 5.03s (max)
+- **Runs**: 10/10
+
+## Files Generated
+- `range_proof_benchmark_results.json` - Dữ liệu chi tiết JSON
+- `range_proof_benchmark_results.csv` - Dữ liệu CSV
+- `range_proof_benchmark_report.md` - Báo cáo này
+
+---
+*Generated on 2025-10-25T03:19:09.616Z*
