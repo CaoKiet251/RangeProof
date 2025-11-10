@@ -3,7 +3,28 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 // Các range size cần measure
-const RANGE_SIZES = [64, 128, 256, 512, 1024];
+let RANGE_SIZES = [64, 128, 256, 512, 1024];
+
+// CLI parsing đơn giản: --range 32 hoặc --ranges 8,16,32
+for (let i = 2; i < process.argv.length; i++) {
+    const arg = process.argv[i];
+    if (arg === '--range' && process.argv[i + 1]) {
+        const v = parseInt(process.argv[i + 1], 10);
+        if (!isNaN(v)) RANGE_SIZES = [v];
+    }
+    if (arg.startsWith('--range=')) {
+        const v = parseInt(arg.split('=')[1], 10);
+        if (!isNaN(v)) RANGE_SIZES = [v];
+    }
+    if (arg === '--ranges' && process.argv[i + 1]) {
+        const arr = String(process.argv[i + 1]).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+        if (arr.length) RANGE_SIZES = arr;
+    }
+    if (arg.startsWith('--ranges=')) {
+        const arr = String(arg.split('=')[1]).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+        if (arr.length) RANGE_SIZES = arr;
+    }
+}
 
 // Hàm measure thời gian thực thi
 function measureExecutionTime(command, description) {
@@ -66,6 +87,106 @@ function getConstraintsAndFft(rangeSize) {
     } catch (e) {
         return { constraints: NaN, signals: NaN, fftOrder: NaN };
     }
+}
+
+/**
+ * Ensure Circom compilation artefacts exist for a specific range size.
+ * @param {number} rangeSize - Bit-width of the range proof circuit.
+ * @returns {void} Generates `.r1cs` and wasm files when missing.
+ */
+function ensureCompiledArtifacts(rangeSize) {
+    const r1csFile = `RangeProof_${rangeSize}.r1cs`;
+    const wasmDir = `RangeProof_${rangeSize}_js`;
+    const hasR1cs = fs.existsSync(r1csFile);
+    const hasWasm = fs.existsSync(path.join(wasmDir, `RangeProof_${rangeSize}.wasm`));
+
+    if (hasR1cs && hasWasm) return;
+
+    // Tạo file circom tạm cho range bất kỳ (Num2Bits(rangeSize))
+    const circomFile = `RangeProof_${rangeSize}.circom`;
+    if (!fs.existsSync(circomFile)) {
+        const circomSrc = [
+            'pragma circom 2.0.4;',
+            '',
+            'include "circomlib/circuits/bitify.circom";',
+            '',
+            `template RangeProofN() {`,
+            `    signal input x;`,
+            `    component n2b = Num2Bits(${rangeSize});`,
+            `    n2b.in <== x;`,
+            `    signal output valid;`,
+            `    valid <== 1;`,
+            `}`,
+            '',
+            'component main = RangeProofN();',
+            ''
+        ].join('\n');
+        fs.writeFileSync(circomFile, circomSrc);
+    }
+
+    // Compile bằng circom để tạo .r1cs và wasm
+    const cmd = `circom ${circomFile} --r1cs --wasm --output . --O2`;
+    execSync(cmd, { stdio: 'inherit' });
+}
+
+/**
+ * Ensure a suitable Powers of Tau file exists, downloading it if necessary.
+ * @param {number} rangeSize - Bit-width of the range proof circuit.
+ * @returns {string} The `.ptau` filename ready for Groth16 setup.
+ */
+function ensurePtauFor(rangeSize) {
+    // Ước lượng fftOrder từ r1cs; chọn power = max(14, fftOrder + 1)
+    const { fftOrder } = getConstraintsAndFft(rangeSize);
+    const power = Math.max(14, isNaN(fftOrder) ? 16 : (fftOrder + 1));
+    const ptauName = `powersOfTau28_hez_final_${power}.ptau`;
+    if (fs.existsSync(ptauName)) return ptauName;
+
+    console.log(`   Downloading ${ptauName}...`);
+    // Nguồn công khai thường dùng (Hermez/Polygon zkEVM mirrors)
+    const urls = [
+        `https://hermez.s3-eu-west-1.amazonaws.com/${ptauName}`,
+        `https://storage.googleapis.com/zkevm/ptau/${ptauName}`
+    ];
+
+    let downloaded = false;
+    for (const u of urls) {
+        try {
+            // Ưu tiên curl nếu có, fallback PowerShell
+            if (process.platform === 'win32') {
+                execSync(`powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -Uri '${u}' -OutFile '${ptauName}' } catch { exit 1 }"`, { stdio: 'ignore' });
+            } else {
+                execSync(`curl -L -o "${ptauName}" "${u}"`, { stdio: 'ignore' });
+            }
+            downloaded = fs.existsSync(ptauName) && fs.statSync(ptauName).size > 0;
+            if (downloaded) break;
+        } catch (_) {
+            // thử URL tiếp theo
+        }
+    }
+    if (!downloaded) {
+        throw new Error(`Cannot download ${ptauName}. Please place it in project root.`);
+    }
+    return ptauName;
+}
+
+/**
+ * Ensure a witness file exists for the circuit by generating it on demand.
+ * @param {number} rangeSize - Bit-width of the circuit.
+ * @returns {Promise<string>} Absolute path to the witness file.
+ */
+async function ensureWitness(rangeSize) {
+    const witnessFile = path.join(process.cwd(), `witness_${rangeSize}.wtns`);
+    if (fs.existsSync(witnessFile)) return witnessFile;
+
+    const inputPath = `input_${rangeSize}.json`;
+    if (!fs.existsSync(inputPath)) {
+        const max = BigInt(2) ** BigInt(rangeSize) - BigInt(1);
+        const test = max > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : max;
+        fs.writeFileSync(inputPath, JSON.stringify({ x: test.toString() }));
+    }
+
+    await buildWitnessOnce(rangeSize, inputPath);
+    return witnessFile;
 }
 
 // Đo tách pha với warm-up + iterations
@@ -137,11 +258,33 @@ async function measurePhasesWithStats(rangeSize, options) {
 }
 
 // Hàm measure performance cho một circuit
-function measureCircuitPerformance(rangeSize) {
+async function measureCircuitPerformance(rangeSize) {
     console.log(`\n${'='.repeat(70)}`);
     console.log(` MEASURING PERFORMANCE FOR RANGE PROOF ${rangeSize} BIT`);
     console.log(`${'='.repeat(70)}`);
     
+    // Đảm bảo có artefacts cần thiết trước khi setup
+    try {
+        ensureCompiledArtifacts(rangeSize);
+    } catch (e) {
+        console.error(`   Failed to compile artifacts for RangeProof_${rangeSize}: ${e.message}`);
+        return {
+            rangeSize,
+            provingKeySetupTime: null,
+            provingKeyContributionTime: null,
+            verificationKeyExportTime: null,
+            proofGenerationTime: null,
+            proofVerificationTime: null,
+            totalProvingKeyTime: null,
+            totalProofTime: null,
+            totalVerificationTime: null,
+            zkeySize: 0,
+            proofSize: 0,
+            publicSize: 0,
+            verificationKeySize: 0
+        };
+    }
+
     const results = {
         rangeSize,
         provingKeySetupTime: null,
@@ -161,8 +304,9 @@ function measureCircuitPerformance(rangeSize) {
     try {
         // 1. Generate proving key setup
         console.log(`\n1️ Generating proving key setup...`);
+        const ptauFile = ensurePtauFor(rangeSize);
         results.provingKeySetupTime = measureExecutionTime(
-            `snarkjs groth16 setup RangeProof_${rangeSize}.r1cs pot12_final.ptau circuit_${rangeSize}_0000.zkey`,
+            `snarkjs groth16 setup RangeProof_${rangeSize}.r1cs ${ptauFile} circuit_${rangeSize}_0000.zkey`,
             `   Setting up groth16 for RangeProof_${rangeSize}`
         );
         
@@ -198,6 +342,7 @@ function measureCircuitPerformance(rangeSize) {
         
         // 4. Generate proof
         console.log(`\n4️ Generating proof...`);
+        await ensureWitness(rangeSize);
         results.proofGenerationTime = measureExecutionTime(
             `snarkjs groth16 prove circuit_${rangeSize}_final.zkey witness_${rangeSize}.wtns proof_${rangeSize}.json public_${rangeSize}.json`,
             `   Generating groth16 proof`
@@ -259,14 +404,14 @@ async function main() {
     const allResults = [];
     
     for (const rangeSize of RANGE_SIZES) {
-        const result = measureCircuitPerformance(rangeSize);
+        const result = await measureCircuitPerformance(rangeSize);
         allResults.push(result);
         
         // Nếu circuit 64-bit đã có sẵn, chỉ cần measure file sizes
         if (rangeSize === 64 && fs.existsSync(`proof_${rangeSize}.json`)) {
             console.log(`\n📊 Circuit 64-bit already has proof, measuring file sizes only...`);
             try {
-                result.zkeySize = fs.existsSync(`circuit_64.zkey`) ? fs.statSync(`circuit_64.zkey`).size : 0;
+                result.zkeySize = fs.existsSync(`circuit_64_final.zkey`) ? fs.statSync(`circuit_64_final.zkey`).size : 0;
                 result.proofSize = fs.existsSync(`proof_64.json`) ? fs.statSync(`proof_64.json`).size : 0;
                 result.publicSize = fs.existsSync(`public_64.json`) ? fs.statSync(`public_64.json`).size : 0;
                 result.verificationKeySize = fs.existsSync(`verification_key_64.json`) ? fs.statSync(`verification_key_64.json`).size : 0;
@@ -274,7 +419,7 @@ async function main() {
                 console.log(`   ZKey size: ${(result.zkeySize / 1024).toFixed(2)} KB`);
                 console.log(`   Proof size: ${(result.proofSize / 1024).toFixed(2)} KB`);
                 console.log(`   Public size: ${(result.publicSize / 1024).toFixed(2)} KB`);
-                console.log(`   Verification key size: ${(result.verificationKeySize.toFixed(2))} KB`);
+                console.log(`   Verification key size: ${((result.verificationKeySize) / 1024).toFixed(2)} KB`);
             } catch (error) {
                 console.error(`   ❌ Error measuring file sizes: ${error.message}`);
             }
@@ -289,6 +434,7 @@ async function main() {
                     const test = max > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : max;
                     fs.writeFileSync(defaultInputPath, JSON.stringify({ x: test.toString() }));
                 }
+                await ensureWitness(rangeSize);
                 result.phaseStats = await measurePhasesWithStats(rangeSize, { iterations: 20, warmup: 5, inputPath: defaultInputPath });
             }
         } catch (e) {

@@ -2,14 +2,6 @@
 
 Thư mục này chứa circuit, key và script phục vụ tạo/kiểm chứng range proof bằng Circom + SnarkJS (hoặc hệ tương đương).
 
-## Cấu trúc chính
-- `circuits/`: các file `.circom` theo từng bit-range
-- `build/`: artifact build (r1cs, wasm, witness calculator) cho từng circuit
-- `keys/`: tệp Powers of Tau (`.ptau`), proving/verification key (`.zkey`, `verification_key*.json`)
-- `inputs/`: dữ liệu đầu vào mẫu (`input_*.json`)
-- `proofs/`: proof (`proof_*.json`), public signals (`public_*.json`), witness (`witness_*.wtns`)
-- `scripts/`: script benchmark, sinh proof, phân tích kết quả
-- `results/`: báo cáo, CSV thống kê
 
 ## Chuẩn bị
 ```bash
